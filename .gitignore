@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.stream-audio-ids
+.discord_bot.log*
+.discord_token.txt*
+.discord_bot_volume.txt*
