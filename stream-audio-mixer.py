@@ -8,10 +8,12 @@ import sys
 import subprocess
 import re
 import os
+import signal
+import ctypes
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QPushButton, QSlider,
     QLabel, QVBoxLayout, QHBoxLayout, QFrame, QListWidget, QListWidgetItem,
-    QLineEdit, QSizePolicy, QSystemTrayIcon, QMenu, QAction
+    QLineEdit, QSizePolicy, QSystemTrayIcon, QMenu, QAction, QComboBox
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor, QPalette, QIcon, QPixmap, QPainter, QBrush, QPen
@@ -20,7 +22,9 @@ from PyQt5.QtGui import QColor, QPalette, QIcon, QPixmap, QPainter, QBrush, QPen
 # ---------------------------------------------------------------------------
 # App blocklist — sink-inputs whose application name matches any of these
 # (case-insensitive substring) will be rerouted to stream-block instead of
-# flowing into stream-mix.  Add/remove entries here, or use the UI at runtime.
+# flowing directly into stream-mix. Add/remove entries here, or use the UI at
+# runtime. The blocked sink is returned to the physical output for local
+# playback, so its audio can be present in the physical sink monitor.
 # ---------------------------------------------------------------------------
 
 BLOCKED_APPS: list[str] = [
@@ -29,19 +33,48 @@ BLOCKED_APPS: list[str] = [
     "zoom",
 ]
 
+BOT_TOKEN_FILE = os.path.join(os.path.dirname(
+    os.path.abspath(__file__)), ".discord_token.txt")
+BOT_LOG_FILE = os.path.join(os.path.dirname(
+    os.path.abspath(__file__)), ".discord_bot.log")
+BOT_VOLUME_FILE = os.path.join(os.path.dirname(
+    os.path.abspath(__file__)), ".discord_bot_volume.txt")
+PHYSICAL_SINK_FILE = os.path.expanduser("~/.aerostream-physical-sink")
+
+STREAM_MODES = {
+    "desktop": "Desktop only",
+    "mic": "Mic + Desktop",
+}
+
 
 # ---------------------------------------------------------------------------
 # pactl helpers
 # ---------------------------------------------------------------------------
 
+
+def resolve_loopback_source(channel: str, default_sink: str | None, default_source: str | None) -> str | None:
+    """Return the PipeWire source to feed into stream-mix for the desired channel."""
+    if channel == "desktop":
+        return f"{default_sink}.monitor" if default_sink else None
+    if channel == "mic":
+        return default_source
+    return None
+
+
 def run_pactl(*args):
     try:
-        r = subprocess.run(['pactl'] + list(args), capture_output=True, text=True, timeout=5)
+        r = subprocess.run(['pactl'] + list(args),
+                           capture_output=True, text=True, timeout=5)
         return r.returncode, r.stdout, r.stderr
     except FileNotFoundError:
         return -1, "", "pactl not found"
     except subprocess.TimeoutExpired:
         return -1, "", "timeout"
+
+
+def _terminate_bot_with_parent():
+    """Ask Linux to terminate the bot if the GUI process disappears."""
+    ctypes.CDLL(None).prctl(1, signal.SIGTERM)
 
 
 def get_default_sink():
@@ -52,6 +85,19 @@ def get_default_sink():
     return None
 
 
+def get_default_physical_sink():
+    try:
+        with open(PHYSICAL_SINK_FILE, "r", encoding="utf-8") as f:
+            sink = f.read().strip()
+            if sink:
+                return sink
+    except FileNotFoundError:
+        pass
+
+    sink = get_default_sink()
+    return sink if sink and not sink.startswith("stream-") else None
+
+
 def get_default_source():
     rc, out, _ = run_pactl("info")
     for line in out.splitlines():
@@ -60,13 +106,32 @@ def get_default_source():
     return None
 
 
+def load_discord_token(path: str = BOT_TOKEN_FILE) -> str:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return ""
+
+
+def save_discord_token(token: str, path: str = BOT_TOKEN_FILE) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        f.write((token or "").strip())
+    os.chmod(path, 0o600)
+
+
+def save_bot_volume(value: int) -> None:
+    with open(BOT_VOLUME_FILE, "w", encoding="ascii") as f:
+        f.write(str(max(0, min(200, int(value))) / 100))
+
+
 # ---------------------------------------------------------------------------
 # Sink-input app enumeration & blocklist enforcement
 # ---------------------------------------------------------------------------
 
 def list_sink_inputs():
     """
-    Return a list of dicts with keys: idx, sink_id, app_name, binary, pid.
+    Return a list of dicts with identifying application and node properties.
     Parses `pactl list sink-inputs` with full Properties block.
     """
     rc, out, _ = run_pactl("list", "sink-inputs")
@@ -87,6 +152,9 @@ def list_sink_inputs():
                 "sink_id": None,
                 "app_name": "",
                 "binary": "",
+                "node_name": "",
+                "media_name": "",
+                "module_id": "",
                 "pid": "",
             }
             in_props = False
@@ -103,9 +171,18 @@ def list_sink_inputs():
                 m = re.match(r'application\.process\.binary\s*=\s*"(.+)"', s)
                 if m:
                     current["binary"] = m.group(1)
+                m = re.match(r'node\.name\s*=\s*"(.+)"', s)
+                if m:
+                    current["node_name"] = m.group(1)
+                m = re.match(r'media\.name\s*=\s*"(.+)"', s)
+                if m:
+                    current["media_name"] = m.group(1)
                 m = re.match(r'application\.process\.id\s*=\s*"(.+)"', s)
                 if m:
                     current["pid"] = m.group(1)
+                m = re.match(r'pulse\.module\.id\s*=\s*"(.+)"', s)
+                if m:
+                    current["module_id"] = m.group(1)
 
     _flush()
     return inputs
@@ -113,8 +190,30 @@ def list_sink_inputs():
 
 def _is_blocked(si: dict) -> bool:
     """Return True if this sink-input matches any entry in BLOCKED_APPS."""
-    name_lower = (si["app_name"] + " " + si["binary"]).lower()
+    name_lower = " ".join(
+        si.get(key, "")
+        for key in ("app_name", "binary", "node_name", "media_name")
+    ).lower()
     return any(b.lower() in name_lower for b in BLOCKED_APPS)
+
+
+def _get_stream_mix_sink_id():
+    return _get_sink_id_by_name("stream-mix")
+
+
+def _get_local_output_loopback_id():
+    rc, out, _ = run_pactl("list", "short", "modules")
+    for line in out.splitlines():
+        parts = line.strip().split()
+        if len(parts) >= 3 and parts[1] == "module-loopback":
+            args = " ".join(parts[2:])
+            if "source=stream-mix.monitor" in args:
+                return parts[0]
+    return None
+
+
+def _move_sink_input(idx, sink):
+    return run_pactl("move-sink-input", str(idx), sink)[0] == 0
 
 
 def has_block_sink() -> bool:
@@ -137,9 +236,10 @@ def _get_sink_id_by_name(name: str):
 
 def ensure_block_sink():
     """
-    Create stream-block null sink + a loopback from stream-block.monitor →
-    default_sink, so blocked apps are still audible locally but their audio
-    never enters stream-mix.  Returns the sink name or None on failure.
+    Create stream-block and route it back to the physical output. This keeps
+    blocked apps audible locally while the blocklist prevents their original
+    streams from entering stream-mix.
+    Returns the sink name or None on failure.
     """
     if has_block_sink():
         return _get_sink_id_by_name("stream-block")
@@ -152,17 +252,37 @@ def ensure_block_sink():
     if rc != 0:
         return None
 
-    # Route stream-block back to speakers so the local user still hears it
-    default_sink = get_default_sink()
-    if default_sink:
-        run_pactl(
-            "load-module", "module-loopback",
-            "source=stream-block.monitor",
-            f"sink={default_sink}",
-            "source_dont_move=true",
-        )
-
     return _get_sink_id_by_name("stream-block")
+
+
+def _ensure_block_loopback():
+    default_sink = get_default_sink()
+    if not default_sink:
+        return
+
+    rc, out, _ = run_pactl("list", "short", "modules")
+    for line in out.splitlines():
+        if ("module-loopback" in line
+                and "source=stream-block.monitor" in line):
+            return
+
+    run_pactl(
+        "load-module", "module-loopback",
+        "source=stream-block.monitor",
+        f"sink={default_sink}",
+        "source_dont_move=true",
+    )
+
+
+def _remove_block_loopbacks():
+    rc, out, _ = run_pactl("list", "short", "modules")
+    for line in out.splitlines():
+        parts = line.strip().split()
+        if len(parts) < 3:
+            continue
+        mod_args = " ".join(parts[2:])
+        if parts[1] == "module-loopback" and "source=stream-block.monitor" in mod_args:
+            run_pactl("unload-module", parts[0])
 
 
 def teardown_block_sink():
@@ -183,40 +303,35 @@ def teardown_block_sink():
 
 def enforce_blocklist() -> list[str]:
     """
-    Move any sink-input whose app matches BLOCKED_APPS to stream-block.
-    stream-block loops back to the default sink so the local user still hears
-    those apps, but their audio never enters stream-mix (passthrough is clean).
+    Keep blocked apps on the physical sink and route other desktop streams to
+    stream-mix. The physical sink is not used as the capture source, so this
+    does not create an audio feedback loop.
     Returns list of app names moved this call.
     """
-    if not BLOCKED_APPS:
+    mix_sink = _get_stream_mix_sink_id()
+    physical_sink = get_default_physical_sink()
+    if not mix_sink or not physical_sink:
         return []
 
-    block_sink_id = ensure_block_sink()
-    if block_sink_id is None:
-        return []
-
+    local_loopback_id = _get_local_output_loopback_id()
     moved = []
     for si in list_sink_inputs():
-        if not _is_blocked(si):
+        if si["module_id"] == str(local_loopback_id):
             continue
-        # Already on stream-block — leave it alone
-        block_current = _get_sink_id_by_name("stream-block")
-        if block_current and si["sink_id"] == block_current:
+        target = physical_sink if _is_blocked(si) else mix_sink
+        if si["sink_id"] == target:
             continue
-        rc, _, _ = run_pactl("move-sink-input", si["idx"], "stream-block")
-        if rc == 0:
-            moved.append(si["app_name"] or si["binary"] or f"#{si['idx']}")
+        if _move_sink_input(si["idx"], target):
+            if _is_blocked(si):
+                moved.append(si["app_name"] or si["binary"] or f"#{si['idx']}")
     return moved
 
 
 def get_blocked_active() -> list[str]:
     """Return app names of sink-inputs currently parked on stream-block."""
-    block_id = _get_sink_id_by_name("stream-block")
-    if not block_id:
-        return []
     result = []
     for si in list_sink_inputs():
-        if si["sink_id"] == block_id:
+        if _is_blocked(si) and si["sink_id"] == get_default_physical_sink():
             result.append(si["app_name"] or si["binary"] or f"#{si['idx']}")
     return result
 
@@ -272,6 +387,36 @@ def set_sink_input_mute(idx, mute):
     run_pactl("set-sink-input-mute", str(idx), "1" if mute else "0")
 
 
+def get_stream_mix_inputs(exclude_module=None):
+    """Return sink-inputs currently routed to stream-mix."""
+    mix_sink = _get_stream_mix_sink_id()
+    if not mix_sink:
+        return []
+    return [
+        item for item in list_sink_inputs()
+        if item["sink_id"] == mix_sink
+        and item.get("module_id") != str(exclude_module)
+    ]
+
+
+def get_desktop_stream_inputs(mic_module=None):
+    """Return desktop application streams feeding the bot mix."""
+    return [
+        item for item in get_stream_mix_inputs(mic_module)
+        if not _is_blocked(item)
+    ]
+
+
+def set_stream_inputs_volume(inputs, pct):
+    for item in inputs:
+        set_sink_input_volume(item["idx"], pct)
+
+
+def set_stream_inputs_mute(inputs, mute):
+    for item in inputs:
+        set_sink_input_mute(item["idx"], mute)
+
+
 # ---------------------------------------------------------------------------
 # Discover module IDs from the running module list (no state file needed)
 # ---------------------------------------------------------------------------
@@ -318,14 +463,20 @@ def has_null_sink():
 # Setup / Teardown
 # ---------------------------------------------------------------------------
 
-def setup_mixer():
+def setup_mixer(source_mode: str = "desktop"):
     default_sink = get_default_sink()
     default_source = get_default_source()
     if not default_sink or not default_source:
         return False, "Could not find default sink or source"
 
+    if source_mode not in STREAM_MODES:
+        return False, f"Unsupported source mode: {source_mode}"
+
     if has_null_sink():
         return False, "stream-mix already exists"
+
+    with open(PHYSICAL_SINK_FILE, "w", encoding="utf-8") as f:
+        f.write(default_sink)
 
     # Create null sink
     rc, out, _ = run_pactl(
@@ -336,40 +487,57 @@ def setup_mixer():
     if rc != 0:
         return False, f"Failed to create null sink: {out}"
 
-    # Desktop loopback (from default sink monitor)
-    desktop_source = f"{default_sink}.monitor"
-    rc, out, _ = run_pactl(
-        "load-module", "module-loopback",
-        f"source={desktop_source}",
-        "sink=stream-mix",
-        "source_dont_move=true",
-        "sink_dont_move=true"
-    )
-    if rc != 0:
-        return False, f"Failed to create desktop loopback: {out}"
-    desktop_mod = out.strip()
+    desktop_mod = None
+    mic_mod = None
 
-    # Mic loopback
-    rc, out, _ = run_pactl(
-        "load-module", "module-loopback",
-        f"source={default_source}",
-        "sink=stream-mix",
-        "source_dont_move=true",
-        "sink_dont_move=true"
-    )
-    if rc != 0:
-        return False, f"Failed to create mic loopback: {out}"
-    mic_mod = out.strip()
+    if source_mode in ("desktop"):
+        rc, out, _ = run_pactl(
+            "load-module", "module-loopback",
+            "source=stream-mix.monitor",
+            f"sink={default_sink}",
+            "source_dont_move=true",
+            "sink_dont_move=true"
+        )
+        if rc != 0:
+            teardown_mixer()
+            return False, f"Failed to create local playback loopback: {out}"
+        desktop_mod = out.strip()
+        run_pactl("set-default-sink", "stream-mix")
+        enforce_blocklist()
+
+    if source_mode in ("mic"):
+        mic_source = resolve_loopback_source(
+            "mic", default_sink, default_source)
+        if not mic_source:
+            return False, "Could not resolve mic source"
+        rc, out, _ = run_pactl(
+            "load-module", "module-loopback",
+            f"source={mic_source}",
+            "sink=stream-mix",
+            "source_dont_move=true",
+            "sink_dont_move=true"
+        )
+        if rc != 0:
+            teardown_mixer()
+            return False, f"Failed to create mic loopback: {out}"
+        mic_mod = out.strip()
 
     # Save state file as fallback / for CLI scripts
     state_path = os.path.expanduser("~/.stream-audio-ids")
     with open(state_path, "w") as f:
-        f.write(f"{desktop_mod} {mic_mod}")
+        f.write(f"{desktop_mod or ''} {mic_mod or ''}".strip())
 
     # Immediately enforce blocklist so filtered apps never touch stream-mix
+    if source_mode == "mic":
+        run_pactl("set-default-sink", default_sink)
     enforce_blocklist()
 
-    return True, f"Desktop: {desktop_mod}  Mic: {mic_mod}"
+    active_parts = []
+    if desktop_mod:
+        active_parts.append("Desktop")
+    if mic_mod:
+        active_parts.append("Mic")
+    return True, " / ".join(active_parts) if active_parts else "No audio sources enabled"
 
 
 def teardown_mixer():
@@ -393,9 +561,22 @@ def teardown_mixer():
         # Match loopbacks targeting stream-mix
         if mod_name == "module-loopback" and "sink=stream-mix" in mod_args:
             target_mods.append(mod_id)
+        # Match the local playback loopback fed by stream-mix.monitor
+        if (mod_name == "module-loopback"
+                and "source=stream-mix.monitor" in mod_args):
+            target_mods.append(mod_id)
         # Match null-sink for stream-mix
         if mod_name == "module-null-sink" and "sink_name=stream-mix" in mod_args:
             target_mods.append(mod_id)
+
+    physical_sink = get_default_physical_sink()
+    if physical_sink:
+        run_pactl("set-default-sink", physical_sink)
+        mix_sink = _get_stream_mix_sink_id()
+        if mix_sink:
+            for si in list_sink_inputs():
+                if si["sink_id"] == mix_sink:
+                    _move_sink_input(si["idx"], physical_sink)
 
     for mod_id in target_mods:
         run_pactl("unload-module", mod_id)
@@ -405,6 +586,8 @@ def teardown_mixer():
     state_path = os.path.expanduser("~/.stream-audio-ids")
     if os.path.exists(state_path):
         os.remove(state_path)
+    if os.path.exists(PHYSICAL_SINK_FILE):
+        os.remove(PHYSICAL_SINK_FILE)
 
     return True, f"Unloaded {len(target_mods)} modules"
 
@@ -429,6 +612,20 @@ def get_mixer_state():
             if v is not None:
                 desktop_vol = v
             desktop_muted = get_sink_input_mute(idx)
+
+    desktop_inputs = get_desktop_stream_inputs(mic_mod)
+    if desktop_inputs:
+        volumes = [
+            get_sink_input_volume(item["idx"])
+            for item in desktop_inputs
+        ]
+        volumes = [volume for volume in volumes if volume is not None]
+        if volumes:
+            desktop_vol = volumes[0]
+        desktop_muted = all(
+            get_sink_input_mute(item["idx"])
+            for item in desktop_inputs
+        )
 
     if mic_mod:
         idx = get_sink_input_for_module(mic_mod)
@@ -462,6 +659,7 @@ def get_mixer_state():
 AERO_QSS = """
 QMainWindow {
     background: transparent;
+    min-height: 900px;
 }
 
 /* ── Main panel: frosted pearl glass ── */
@@ -474,6 +672,7 @@ QMainWindow {
     border-bottom-color: rgba(100, 160, 220, 120);
     border-right-color:  rgba(100, 160, 220, 100);
     border-radius: 12px;
+  
 }
 
 /* ── Title ── */
@@ -485,6 +684,14 @@ QMainWindow {
     font-weight: bold;
     font-family: "Segoe UI", "Ubuntu", sans-serif;
     padding: 6px 0px 2px 0px;
+    letter-spacing: 0.4px;
+}
+
+/* ── Sections / cards ── */
+#sectionCard {
+    background: rgba(255, 255, 255, 110);
+    border: 1px solid rgba(120, 180, 230, 120);
+    border-radius: 10px;
 }
 
 /* ── Status ── */
@@ -539,11 +746,15 @@ QPushButton {
     border: 1px solid rgba(100, 160, 215, 180);
     border-bottom-color: rgba(60, 120, 190, 200);
     border-radius: 8px;
-    padding: 9px 24px;
+    padding: 9px 18px;
     font-size: 13px;
     font-weight: bold;
     font-family: "Segoe UI", "Ubuntu", sans-serif;
-    min-width: 115px;
+    min-width: 110px;
+}
+#botActionButton {
+    min-width: 0px;
+    padding: 7px 10px;
 }
 QPushButton:hover {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -681,7 +892,10 @@ class MixerWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Stream Audio Mixer")
-        self.setFixedSize(430, 580)
+        self.resize(470, 500)
+        self.setMinimumSize(420, 560)
+        self.bot_process = None
+        self.bot_log_handle = None
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
 
@@ -780,45 +994,63 @@ class MixerWindow(QMainWindow):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self.central)
-        layout.setSpacing(8)
-        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(10)
+        layout.setContentsMargins(18, 16, 18, 16)
 
-        # Title
         title = QLabel("Stream Audio Mixer")
         title.setObjectName("titleLabel")
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
 
-        # Status
         self.status_label = QLabel("Checking...")
         self.status_label.setObjectName("statusLabel")
         self.status_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.status_label)
 
-        # Device info
         self.device_label = QLabel("")
         self.device_label.setObjectName("deviceLabel")
         self.device_label.setAlignment(Qt.AlignCenter)
         self.device_label.setWordWrap(True)
         layout.addWidget(self.device_label)
 
-        # Separator
+        mode_frame = QFrame()
+        mode_frame.setObjectName("sectionCard")
+        mode_layout = QVBoxLayout(mode_frame)
+        mode_layout.setContentsMargins(12, 10, 12, 10)
+        mode_row = QHBoxLayout()
+        mode_label = QLabel("Source mode")
+        mode_label.setObjectName("channelLabel")
+        mode_row.addWidget(mode_label)
+        self.stream_mode_combo = QComboBox()
+        for key, label in STREAM_MODES.items():
+            self.stream_mode_combo.addItem(label, key)
+        self.stream_mode_combo.setCurrentText(STREAM_MODES["desktop"])
+        mode_row.addWidget(self.stream_mode_combo)
+        mode_layout.addLayout(mode_row)
+        layout.addWidget(mode_frame)
+
         sep = QFrame()
         sep.setObjectName("separator")
         sep.setFrameShape(QFrame.HLine)
         layout.addWidget(sep)
 
-        # Desktop channel
+        audio_frame = QFrame()
+        audio_frame.setObjectName("sectionCard")
+        audio_layout = QVBoxLayout(audio_frame)
+        audio_layout.setContentsMargins(12, 10, 12, 10)
+
         cl1 = QLabel("Desktop Audio")
         cl1.setObjectName("channelLabel")
-        layout.addWidget(cl1)
+        audio_layout.addWidget(cl1)
 
         self.desktop_slider = QSlider(Qt.Horizontal)
         self.desktop_slider.setRange(0, 200)
         self.desktop_slider.setValue(50)
-        self.desktop_slider.valueChanged.connect(lambda v: self.desktop_vol_label.setText(f"{v}%"))
-        self.desktop_slider.sliderReleased.connect(self._on_desktop_slider_released)
-        layout.addWidget(self.desktop_slider)
+        self.desktop_slider.valueChanged.connect(
+            lambda v: self.desktop_vol_label.setText(f"{v}%"))
+        self.desktop_slider.valueChanged.connect(
+            self._on_desktop_slider_changed)
+        audio_layout.addWidget(self.desktop_slider)
 
         drow = QHBoxLayout()
         self.desktop_mute_btn = QPushButton("M")
@@ -856,55 +1088,35 @@ class MixerWindow(QMainWindow):
         self.desktop_vol_label.setObjectName("volPct")
         drow.addWidget(self.desktop_vol_label)
         drow.addStretch()
-        layout.addLayout(drow)
+        audio_layout.addLayout(drow)
 
-        # Mic channel
-        cl2 = QLabel("Microphone")
-        cl2.setObjectName("channelLabel")
-        layout.addWidget(cl2)
+        layout.addWidget(audio_frame)
 
-        self.mic_slider = QSlider(Qt.Horizontal)
-        self.mic_slider.setRange(0, 200)
-        self.mic_slider.setValue(50)
-        self.mic_slider.valueChanged.connect(lambda v: self.mic_vol_label.setText(f"{v}%"))
-        self.mic_slider.sliderReleased.connect(self._on_mic_slider_released)
-        layout.addWidget(self.mic_slider)
-
-        mrow = QHBoxLayout()
-        self.mic_mute_btn = QPushButton("M")
-        self.mic_mute_btn.setFixedSize(32, 28)
-        self.mic_mute_btn.setCheckable(True)
-        self.mic_mute_btn.clicked.connect(self._on_mic_mute_toggled)
-        self.mic_mute_btn.setStyleSheet(self.desktop_mute_btn.styleSheet())
-        mrow.addWidget(self.mic_mute_btn)
-        self.mic_vol_label = QLabel("50%")
-        self.mic_vol_label.setObjectName("volPct")
-        mrow.addWidget(self.mic_vol_label)
-        mrow.addStretch()
-        layout.addLayout(mrow)
-
-        # Separator
         sep2 = QFrame()
         sep2.setObjectName("separator")
         sep2.setFrameShape(QFrame.HLine)
         layout.addWidget(sep2)
 
-        # -- Blocklist section --
+        app_frame = QFrame()
+        app_frame.setObjectName("sectionCard")
+        app_layout = QVBoxLayout(app_frame)
+        app_layout.setContentsMargins(12, 10, 12, 10)
+
         bl_label = QLabel("Filtered Apps (blocked from passthrough)")
+        bl_label.setMaximumHeight(20)
         bl_label.setObjectName("channelLabel")
-        layout.addWidget(bl_label)
+        app_layout.addWidget(bl_label)
 
         # List of currently-blocked-active apps (live status)
         self.blocked_active_label = QLabel("None running")
         self.blocked_active_label.setObjectName("deviceLabel")
         self.blocked_active_label.setWordWrap(True)
-        layout.addWidget(self.blocked_active_label)
+        app_layout.addWidget(self.blocked_active_label)
 
-        # Editable blocklist
         self.blocklist_widget = QListWidget()
-        self.blocklist_widget.setMaximumHeight(90)
         self.blocklist_widget.setStyleSheet("""
             QListWidget {
+                
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                     stop:0 rgba(245, 251, 255, 200),
                     stop:1 rgba(220, 238, 252, 200));
@@ -921,9 +1133,10 @@ class MixerWindow(QMainWindow):
                 color: rgba(10, 45, 110, 255);
             }
         """)
+        self.blocklist_widget.setMaximumHeight(300)
         for entry in BLOCKED_APPS:
             self.blocklist_widget.addItem(QListWidgetItem(entry))
-        layout.addWidget(self.blocklist_widget)
+        app_layout.addWidget(self.blocklist_widget)
 
         add_row = QHBoxLayout()
         self.bl_input = QLineEdit()
@@ -1003,7 +1216,75 @@ class MixerWindow(QMainWindow):
         """)
         bl_del_btn.clicked.connect(self._on_blocklist_remove)
         add_row.addWidget(bl_del_btn)
-        layout.addLayout(add_row)
+        app_layout.addLayout(add_row)
+        layout.addWidget(app_frame)
+
+        bot_frame = QFrame()
+        bot_frame.setObjectName("sectionCard")
+        bot_layout = QVBoxLayout(bot_frame)
+        bot_layout.setContentsMargins(12, 10, 12, 10)
+
+        bot_label = QLabel("Discord bot")
+        bot_label.setObjectName("channelLabel")
+        bot_layout.addWidget(bot_label)
+
+        self.bot_token_input = QLineEdit()
+        self.bot_token_input.setPlaceholderText(
+            "Token do bot (salvo em .discord_token.txt)")
+        self.bot_token_input.setEchoMode(QLineEdit.Password)
+        self.bot_token_input.setStyleSheet("""
+            QLineEdit {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 rgba(245, 251, 255, 210),
+                    stop:1 rgba(220, 238, 252, 210));
+                border: 1px solid rgba(100, 160, 215, 150);
+                border-radius: 6px;
+                color: rgba(15, 55, 120, 230);
+                padding: 4px 8px;
+                font-size: 12px;
+                font-family: "Segoe UI", "Ubuntu", sans-serif;
+            }
+        """)
+        bot_layout.addWidget(self.bot_token_input)
+
+        bot_token_row = QHBoxLayout()
+        bot_token_row.setSpacing(8)
+        bot_token_row.setContentsMargins(0, 0, 0, 0)
+        self.load_token_btn = QPushButton("Carregar token")
+        self.load_token_btn.clicked.connect(self._on_load_token)
+        self.save_token_btn = QPushButton("Salvar token")
+        self.save_token_btn.clicked.connect(self._on_save_token)
+        self.start_bot_btn = QPushButton("Start bot")
+        self.start_bot_btn.clicked.connect(self._on_start_discord_bot)
+        for button in (
+            self.load_token_btn,
+            self.save_token_btn,
+            self.start_bot_btn,
+        ):
+            button.setObjectName("botActionButton")
+            button.setMinimumHeight(30)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            bot_token_row.addWidget(button, 1)
+        bot_layout.addLayout(bot_token_row)
+
+        transmission_label = QLabel("Bot transmission volume")
+        transmission_label.setObjectName("channelLabel")
+        bot_layout.addWidget(transmission_label)
+        self.bot_volume_slider = QSlider(Qt.Horizontal)
+        self.bot_volume_slider.setRange(0, 200)
+        self.bot_volume_slider.setValue(100)
+        self.bot_volume_slider.valueChanged.connect(
+            lambda value: self.bot_volume_label.setText(f"{value}%"))
+        self.bot_volume_slider.valueChanged.connect(save_bot_volume)
+        bot_layout.addWidget(self.bot_volume_slider)
+        self.bot_volume_label = QLabel("100%")
+        self.bot_volume_label.setObjectName("volPct")
+        bot_layout.addWidget(self.bot_volume_label)
+
+        self.bot_status_label = QLabel("Bot parado")
+        self.bot_status_label.setObjectName("deviceLabel")
+        bot_layout.addWidget(self.bot_status_label)
+        layout.addWidget(bot_frame)
 
         # Separator before buttons
         btn_row = QHBoxLayout()
@@ -1056,50 +1337,141 @@ class MixerWindow(QMainWindow):
     def _on_start(self):
         self.start_btn.setEnabled(False)
         self.status_label.setText("Setting up...")
-        success, msg = setup_mixer()
-        self.status_label.setText(f"{'OK' if success else 'FAIL'}  {msg}" if not success else "Running")
+        source_mode = self.stream_mode_combo.currentData()
+        success, msg = setup_mixer(source_mode=source_mode)
+        self.status_label.setText(
+            f"{'OK' if success else 'FAIL'}  {msg}" if not success else "Running")
         self.start_btn.setEnabled(True)
         self.poll_state()
+
+    def _on_load_token(self):
+        token = load_discord_token()
+        if token:
+            self.bot_token_input.setText(token)
+            self.bot_status_label.setText("Token carregado")
+        else:
+            self.bot_status_label.setText(
+                "Nenhum token salvo em .discord_token.txt")
+
+    def _on_save_token(self):
+        token = self.bot_token_input.text().strip()
+        if not token:
+            self.bot_status_label.setText("Informe um token antes de salvar")
+            return
+        save_discord_token(token)
+        self.bot_status_label.setText("Token salvo em .discord_token.txt")
+
+    def _on_start_discord_bot(self):
+        token = self.bot_token_input.text().strip() or load_discord_token()
+        if not token:
+            self.bot_status_label.setText(
+                "Token vazio. Salve um token primeiro.")
+            return
+
+        self.start_btn.setEnabled(False)
+        self.status_label.setText("Setting up mixer...")
+        source_mode = self.stream_mode_combo.currentData()
+        if has_null_sink():
+            success, msg = True, "Mixer already running"
+        else:
+            success, msg = setup_mixer(source_mode=source_mode)
+        if not success:
+            self.status_label.setText(f"FAIL  {msg}")
+            self.start_btn.setEnabled(True)
+            return
+
+        self.status_label.setText("Running")
+        self.start_btn.setEnabled(True)
+        self.poll_state()
+
+        try:
+            if self.bot_process and self.bot_process.poll() is None:
+                self.bot_status_label.setText("Bot já está em execução")
+                return
+
+            project_dir = os.path.dirname(os.path.abspath(__file__))
+            venv_python = os.path.join(project_dir, ".venv", "bin", "python")
+            bot_python = venv_python if os.path.isfile(
+                venv_python) else sys.executable
+            bot_env = os.environ.copy()
+            bot_env["DISCORD_BOT_TOKEN"] = token
+            save_bot_volume(self.bot_volume_slider.value())
+            self.bot_log_handle = open(BOT_LOG_FILE, "a", encoding="utf-8")
+            self.bot_process = subprocess.Popen(
+                [bot_python, os.path.join(
+                    project_dir, "discord_bot_runner.py")],
+                stdout=self.bot_log_handle,
+                stderr=subprocess.STDOUT,
+                env=bot_env,
+                start_new_session=True,
+                preexec_fn=_terminate_bot_with_parent,
+            )
+            self.bot_status_label.setText(
+                f"Bot iniciando (PID {self.bot_process.pid})...")
+        except Exception as exc:
+            if self.bot_log_handle:
+                self.bot_log_handle.close()
+                self.bot_log_handle = None
+            self.bot_process = None
+            self.bot_status_label.setText(f"Erro ao iniciar bot: {exc}")
+
+    def _close_bot_log(self):
+        if self.bot_log_handle:
+            self.bot_log_handle.close()
+            self.bot_log_handle = None
+
+    def _stop_discord_bot(self):
+        if not self.bot_process or self.bot_process.poll() is not None:
+            self.bot_process = None
+            return
+
+        try:
+            os.killpg(self.bot_process.pid, 15)
+            self.bot_process.wait(timeout=5)
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            if self.bot_process.poll() is None:
+                os.killpg(self.bot_process.pid, 9)
+                self.bot_process.wait(timeout=2)
+        finally:
+            self._close_bot_log()
+            self.bot_process = None
+            self.bot_status_label.setText("Bot encerrado")
 
     def _on_teardown(self):
         self.teardown_btn.setEnabled(False)
         self.status_label.setText("Tearing down...")
+        self._stop_discord_bot()
         teardown_mixer()
         self.status_label.setText("Stopped")
         self.teardown_btn.setEnabled(True)
         self.poll_state()
 
-    def _on_desktop_slider_released(self):
-        state = get_mixer_state()
-        if state["desktop_mod"]:
-            idx = get_sink_input_for_module(state["desktop_mod"])
-            if idx:
-                set_sink_input_volume(idx, self.desktop_slider.value())
+    def closeEvent(self, event):
+        self._stop_discord_bot()
+        teardown_mixer()
+        self.tray_icon.hide()
+        event.accept()
 
-    def _on_mic_slider_released(self):
+    def _on_desktop_slider_changed(self, value):
         state = get_mixer_state()
-        if state["mic_mod"]:
-            idx = get_sink_input_for_module(state["mic_mod"])
-            if idx:
-                set_sink_input_volume(idx, self.mic_slider.value())
+        inputs = get_desktop_stream_inputs(state["mic_mod"])
+        set_stream_inputs_volume(inputs, value)
 
     def _on_desktop_mute_toggled(self):
         state = get_mixer_state()
-        if state["desktop_mod"]:
-            idx = get_sink_input_for_module(state["desktop_mod"])
-            if idx:
-                set_sink_input_mute(idx, self.desktop_mute_btn.isChecked())
-
-    def _on_mic_mute_toggled(self):
-        state = get_mixer_state()
-        if state["mic_mod"]:
-            idx = get_sink_input_for_module(state["mic_mod"])
-            if idx:
-                set_sink_input_mute(idx, self.mic_mute_btn.isChecked())
+        inputs = get_desktop_stream_inputs(state["mic_mod"])
+        set_stream_inputs_mute(inputs, self.desktop_mute_btn.isChecked())
 
     # -- polling --
 
     def poll_state(self):
+        if self.bot_process and self.bot_process.poll() is not None:
+            exit_code = self.bot_process.returncode
+            self._close_bot_log()
+            self.bot_process = None
+            self.bot_status_label.setText(
+                f"Bot encerrado (código {exit_code})")
+
         state = get_mixer_state()
 
         # Enforce blocklist on every poll tick
@@ -1111,17 +1483,13 @@ class MixerWindow(QMainWindow):
             self.start_btn.setEnabled(False)
             self.teardown_btn.setEnabled(True)
             self.desktop_slider.setEnabled(True)
-            self.mic_slider.setEnabled(True)
             self.desktop_mute_btn.setEnabled(True)
-            self.mic_mute_btn.setEnabled(True)
         else:
             self.status_label.setText("Stopped")
             self.start_btn.setEnabled(True)
             self.teardown_btn.setEnabled(False)
             self.desktop_slider.setEnabled(False)
-            self.mic_slider.setEnabled(False)
             self.desktop_mute_btn.setEnabled(False)
-            self.mic_mute_btn.setEnabled(False)
 
         # Device info
         sn = state["default_sink"] or "?"
@@ -1133,7 +1501,8 @@ class MixerWindow(QMainWindow):
         # Blocked apps — live status
         blocked = state["blocked_active"]
         if blocked:
-            self.blocked_active_label.setText("🔇 Blocked now: " + ", ".join(blocked))
+            self.blocked_active_label.setText(
+                "🔇 Blocked now: " + ", ".join(blocked))
         elif state["active"]:
             self.blocked_active_label.setText("✓ No blocked apps running")
         else:
@@ -1145,24 +1514,14 @@ class MixerWindow(QMainWindow):
         self.desktop_slider.blockSignals(False)
         self.desktop_vol_label.setText(f"{state['desktop_vol']}%")
 
-        self.mic_slider.blockSignals(True)
-        self.mic_slider.setValue(state["mic_vol"])
-        self.mic_slider.blockSignals(False)
-        self.mic_vol_label.setText(f"{state['mic_vol']}%")
-
         self.desktop_mute_btn.blockSignals(True)
         self.desktop_mute_btn.setChecked(state["desktop_muted"])
         self.desktop_mute_btn.blockSignals(False)
-
-        self.mic_mute_btn.blockSignals(True)
-        self.mic_mute_btn.setChecked(state["mic_muted"])
-        self.mic_mute_btn.blockSignals(False)
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setAttribute(Qt.AA_UseHighDpiPixmaps, True)

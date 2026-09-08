@@ -1,6 +1,6 @@
 # AeroStream Mixer 🌊🎛️
 
-Frutiger Aero styled PipeWire audio router for Linux. Mixes desktop sound and microphone into a single virtual stream source while isolating apps like Discord so call participants don't hear themselves.
+Frutiger Aero styled PipeWire audio router for Linux. Routes desktop audio or microphone input to a virtual stream source, with an integrated Discord voice bot.
 
 <p align="center">
   <img src="assets/screenshot.png" alt="AeroStream Mixer UI Screenshot" width="440" />
@@ -10,9 +10,11 @@ Frutiger Aero styled PipeWire audio router for Linux. Mixes desktop sound and mi
 
 ## 🚀 Why Use This?
 
-- **Linux Screenshare Audio Bypass:** If your Discord or browser screenshare on Linux can't stream application audio, select `stream-mix.monitor` as your input device to stream both your mic and your game/system audio at the same time.
-- **App Isolation:** Automatically prevents Discord/Zoom/Teams from being sent to the stream while keeping them fully audible in your headphones.
-- **System Tray:** Minimize to tray with background live monitoring and quick volume adjustments.
+- **Linux audio capture:** Use `stream-mix.monitor` as an input device for Discord, OBS, a browser, or the integrated bot.
+- **App Isolation:** Routes normal desktop applications through `stream-mix` and keeps Discord/Zoom/Teams on the physical sink, outside the captured monitor.
+- **Loop-free playback:** The mix monitor is sent to the physical output for local listening. The physical output monitor is never fed back into the mix.
+- **Live controls:** Adjust desktop source volume and bot transmission volume from the interface.
+- **System Tray:** Minimize to tray with live routing status.
 
 ---
 
@@ -20,9 +22,15 @@ Frutiger Aero styled PipeWire audio router for Linux. Mixes desktop sound and mi
 
 > **Note:** Developed and tested specifically on **Linux Mint 22.2 (XFCE)** using **PipeWire 1.0.5** with ALSA (`k7.0.0-30-generic`, `snd_hda_intel` / `snd-usb-audio`).
 
+Run the included installer:
+
 ```bash
-sudo apt update && sudo apt install -y python3 python3-pyqt5 pulseaudio-utils
+./install-dependencies.sh
 ```
+
+It installs the system packages, creates `.venv`, and installs the Python
+packages from `requirements.txt`. The system also needs a running PipeWire or
+PulseAudio session.
 
 ---
 
@@ -31,27 +39,30 @@ sudo apt update && sudo apt install -y python3 python3-pyqt5 pulseaudio-utils
 ```bash
 git clone https://github.com/nickolasrm/AeroStream-Mixer.git
 cd AeroStream-Mixer
-python3 stream-audio-mixer.py
+./install-dependencies.sh
+.venv/bin/python stream-audio-mixer.py
 ```
 
-1. Click **Start** in the GUI.
-2. In Discord / OBS / browser, set your **Microphone / Input Device** to:
+1. Select `Desktop only` or `Mic only` in the source mode.
+2. Click **Start** to create the mixer route.
+3. In Discord, OBS, or a browser, set the input device to:
    ```text
-   Stream audio mix (desktop + mic) [stream-mix.monitor]
+   Stream audio mix [stream-mix.monitor]
    ```
-3. Add any app name to **Filtered Apps** to exclude it from the stream passthrough.
-4. Click **Teardown** when done.
+4. Use **Desktop Audio** to adjust the desktop source without changing the bot's final volume.
+5. Click **Teardown** when done.
 
----
+### Discord bot
 
-## 💻 CLI Usage (Optional)
+1. Enter or load the token in the interface and click **Start bot**.
+2. Join the desired voice channel.
+3. Run `/play` in the Discord server.
+4. Adjust **Bot transmission volume** for the Discord output only.
+5. Run `/stop` to end transmission.
 
-```bash
-./setup-stream-audio.sh              # Start mixer
-./set-stream-volume.sh desktop 0.6   # Desktop volume (0.0 - 1.0)
-./set-stream-volume.sh mic 0.8       # Mic volume (0.0 - 1.0)
-./teardown-stream-audio.sh           # Stop and clean up
-```
+The bot joins the voice channel of the user who invoked `/play`. It captures
+`stream-mix.monitor`, validates that the source exists, and reports FFmpeg
+errors in `.discord_bot.log`.
 
 ---
 
