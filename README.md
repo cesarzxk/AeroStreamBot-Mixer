@@ -1,4 +1,4 @@
-# AeroStream Mixer 🌊🎛️
+# AeroStreamBot Mixer 🌊🎛️
 
 Frutiger Aero styled PipeWire audio router for Linux. Routes desktop audio or microphone input to a virtual stream source, with an integrated Discord voice bot.
 
