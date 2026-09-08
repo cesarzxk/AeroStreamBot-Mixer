@@ -2,12 +2,17 @@
 
 Frutiger Aero styled PipeWire audio router for Linux. Mixes desktop sound and microphone into a single virtual stream source while isolating apps like Discord so call participants don't hear themselves.
 
+<p align="center">
+  <img src="assets/screenshot.png" alt="AeroStream Mixer UI Screenshot" width="440" />
+</p>
+
 ---
 
 ## 🚀 Why Use This?
 
 - **Linux Screenshare Audio Bypass:** If your Discord or browser screenshare on Linux can't stream application audio, select `stream-mix.monitor` as your input device to stream both your mic and your game/system audio at the same time.
 - **App Isolation:** Automatically prevents Discord/Zoom/Teams from being sent to the stream while keeping them fully audible in your headphones.
+- **System Tray:** Minimize to tray with background live monitoring and quick volume adjustments.
 
 ---
 
