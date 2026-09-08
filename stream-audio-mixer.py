@@ -11,10 +11,10 @@ import os
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QPushButton, QSlider,
     QLabel, QVBoxLayout, QHBoxLayout, QFrame, QListWidget, QListWidgetItem,
-    QLineEdit, QSizePolicy,
+    QLineEdit, QSizePolicy, QSystemTrayIcon, QMenu, QAction
 )
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QColor, QPalette
+from PyQt5.QtGui import QColor, QPalette, QIcon, QPixmap, QPainter, QBrush, QPen
 
 
 # ---------------------------------------------------------------------------
@@ -638,6 +638,42 @@ QSlider::handle:horizontal:hover {
 
 
 # ---------------------------------------------------------------------------
+# Tray Icon Helper
+# ---------------------------------------------------------------------------
+
+def create_aero_tray_icon() -> QIcon:
+    """Generate a clean Frutiger Aero styled glass orb icon for the system tray."""
+    size = 64
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+
+    # Outer glow / rim
+    painter.setPen(QPen(QColor(80, 160, 230, 220), 2))
+    painter.setBrush(QBrush(QColor(180, 225, 255, 230)))
+    painter.drawEllipse(4, 4, size - 8, size - 8)
+
+    # Glass highlight (upper hemisphere)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QBrush(QColor(255, 255, 255, 180)))
+    painter.drawEllipse(12, 8, size - 24, (size - 24) // 2)
+
+    # Audio wave / equalizer bars (Frutiger blue/cyan)
+    painter.setBrush(QBrush(QColor(20, 80, 160, 220)))
+    # Bar 1
+    painter.drawRoundedRect(18, 28, 6, 16, 2, 2)
+    # Bar 2 (center, taller)
+    painter.drawRoundedRect(28, 20, 6, 24, 2, 2)
+    # Bar 3
+    painter.drawRoundedRect(38, 25, 6, 19, 2, 2)
+
+    painter.end()
+    return QIcon(pixmap)
+
+
+# ---------------------------------------------------------------------------
 # Main Window
 # ---------------------------------------------------------------------------
 
@@ -654,6 +690,7 @@ class MixerWindow(QMainWindow):
         self.setCentralWidget(self.central)
 
         self._setup_ui()
+        self._setup_tray()
         self.setStyleSheet(AERO_QSS)
 
         self.poll_timer = QTimer()
@@ -662,6 +699,64 @@ class MixerWindow(QMainWindow):
 
         self.drag_pos = None
         self.poll_state()
+
+    # -- Tray icon setup --
+
+    def _setup_tray(self):
+        self.tray_icon = QSystemTrayIcon(self)
+        self.icon = create_aero_tray_icon()
+        self.tray_icon.setIcon(self.icon)
+        self.setWindowIcon(self.icon)
+        self.tray_icon.setToolTip("Stream Audio Mixer (Frutiger Aero)")
+
+        # Tray Context Menu
+        tray_menu = QMenu()
+        tray_menu.setStyleSheet("""
+            QMenu {
+                background: rgba(235, 245, 255, 245);
+                border: 1px solid rgba(120, 180, 230, 180);
+                border-radius: 6px;
+                color: rgba(15, 60, 130, 230);
+                font-family: "Segoe UI", "Ubuntu", sans-serif;
+                font-size: 12px;
+                padding: 4px;
+            }
+            QMenu::item:selected {
+                background: rgba(180, 220, 250, 200);
+                color: rgba(10, 45, 110, 255);
+                border-radius: 4px;
+            }
+        """)
+
+        show_action = QAction("Open / Restore", self)
+        show_action.triggered.connect(self._restore_from_tray)
+        tray_menu.addAction(show_action)
+
+        hide_action = QAction("Minimize to Tray", self)
+        hide_action.triggered.connect(self.hide)
+        tray_menu.addAction(hide_action)
+
+        tray_menu.addSeparator()
+
+        quit_action = QAction("Exit", self)
+        quit_action.triggered.connect(QApplication.instance().quit)
+        tray_menu.addAction(quit_action)
+
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.activated.connect(self._on_tray_activated)
+        self.tray_icon.show()
+
+    def _on_tray_activated(self, reason):
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            if self.isVisible() and not self.isMinimized():
+                self.hide()
+            else:
+                self._restore_from_tray()
+
+    def _restore_from_tray(self):
+        self.showNormal()
+        self.activateWindow()
+        self.raise_()
 
     # -- window dragging (frameless) --
 
@@ -679,7 +774,7 @@ class MixerWindow(QMainWindow):
         self.drag_pos = None
 
     def mouseDoubleClickEvent(self, event):
-        self.close()
+        self.hide()
 
     # -- UI construction --
 
@@ -923,7 +1018,7 @@ class MixerWindow(QMainWindow):
         layout.addLayout(btn_row)
 
         # Close hint
-        hint = QLabel("Drag to move  ·  Double-click to close")
+        hint = QLabel("Drag to move  ·  Double-click to minimize to tray")
         hint.setObjectName("deviceLabel")
         hint.setAlignment(Qt.AlignCenter)
         layout.addWidget(hint)
