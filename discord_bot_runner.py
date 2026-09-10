@@ -13,7 +13,7 @@ try:
     import discord
     from discord.ext import commands
 except ImportError:
-    raise SystemExit("Instale o pacote discord.py: pip install discord.py")
+    raise SystemExit("Install the discord.py package: pip install discord.py")
 
 
 class AudioBot(commands.Bot):
@@ -24,7 +24,7 @@ class AudioBot(commands.Bot):
         self.volume_task = None
 
     async def on_ready(self):
-        print(f"Bot conectado como {self.user} ({self.user.id})", flush=True)
+        print(f"Bot connected as {self.user} ({self.user.id})", flush=True)
         if self.guild_commands_synced:
             return
 
@@ -36,11 +36,11 @@ class AudioBot(commands.Bot):
                 synced_total += len(synced)
             self.guild_commands_synced = True
             print(
-                f"Comandos sincronizados nos servidores: {synced_total}",
+                f"Commands synced across servers: {synced_total}",
                 flush=True,
             )
         except Exception as exc:
-            print(f"Erro ao sincronizar comandos: {exc}", flush=True)
+            print(f"Error syncing commands: {exc}", flush=True)
 
     def _source_available(self):
         try:
@@ -84,12 +84,12 @@ class AudioBot(commands.Bot):
 
     async def _start_transmission(self, voice_client):
         if not voice_client:
-            return False, "Cliente de voz não está conectado."
+            return False, "Voice client is not connected."
         if not self._source_available():
-            return False, f"A fonte {AUDIO_SOURCE} não está disponível. Inicie o mixer primeiro."
+            return False, f"The source {AUDIO_SOURCE} is not available. Start the mixer first."
 
         if voice_client.is_playing():
-            return True, "A transmissão já está ativa."
+            return True, "The transmission is already active."
 
         try:
             ffmpeg_source = discord.FFmpegPCMAudio(
@@ -105,17 +105,17 @@ class AudioBot(commands.Bot):
 
             def on_audio_end(error):
                 if error:
-                    print(f"Erro no FFmpeg: {error}", flush=True)
+                    print(f"FFmpeg error: {error}", flush=True)
                 self.transmissions.pop(voice_client.guild.id, None)
 
             voice_client.play(audio_source, after=on_audio_end)
             self.transmissions[voice_client.guild.id] = (
                 voice_client, audio_source)
-            print(f"Transmitindo {AUDIO_SOURCE}.", flush=True)
-            return True, "Transmissão iniciada."
+            print(f"Streaming {AUDIO_SOURCE}.", flush=True)
+            return True, "Transmission started."
         except Exception as exc:
-            print(f"Erro ao iniciar transmissão: {exc}", flush=True)
-            return False, f"Erro ao iniciar FFmpeg: {exc}"
+            print(f"Error starting transmission: {exc}", flush=True)
+            return False, f"Error starting FFmpeg: {exc}"
 
     async def on_message(self, message):
         if message.author == self.user:
@@ -131,7 +131,7 @@ async def main():
     args = parser.parse_args()
     token = args.token or os.environ.get("DISCORD_BOT_TOKEN")
     if not token:
-        parser.error("informe --token ou defina DISCORD_BOT_TOKEN")
+        parser.error("provide --token or set DISCORD_BOT_TOKEN")
 
     intents = discord.Intents.default()
     intents.message_content = True
@@ -141,18 +141,18 @@ async def main():
 
     @bot.tree.command(
         name="play",
-        description="Entra no seu canal de voz e transmite o áudio do sistema",
+        description="Joins your voice channel and streams system audio",
     )
     async def play(interaction: discord.Interaction):
         if not interaction.guild:
             await interaction.response.send_message(
-                "Este comando só pode ser usado em um servidor.", ephemeral=True)
+                "This command can only be used in a server.", ephemeral=True)
             return
 
         voice_state = interaction.user.voice
         if voice_state is None or voice_state.channel is None:
             await interaction.response.send_message(
-                "Entre em um canal de voz antes de usar /play.", ephemeral=True)
+                "Join a voice channel before using /play.", ephemeral=True)
             return
 
         channel = voice_state.channel
@@ -165,24 +165,24 @@ async def main():
 
             _, message = await bot._start_transmission(voice_client)
             await interaction.response.send_message(
-                f"{message} Canal: **{channel.name}**.", ephemeral=True)
+                f"{message} Channel: **{channel.name}**.", ephemeral=True)
         except Exception as exc:
             await interaction.response.send_message(
-                f"Não foi possível entrar no canal: {exc}", ephemeral=True)
+                f"Could not join the channel: {exc}", ephemeral=True)
 
     @bot.tree.command(
         name="stop",
-        description="Para a transmissão do áudio do sistema",
+        description="Stops the system audio transmission",
     )
     async def stop(interaction: discord.Interaction):
         if not interaction.guild:
             await interaction.response.send_message(
-                "Este comando só pode ser usado em um servidor.", ephemeral=True)
+                "This command can only be used in a server.", ephemeral=True)
             return
 
         bot._stop_transmission(interaction.guild.id)
         await interaction.response.send_message(
-            "Transmissão parada.", ephemeral=True)
+            "Transmission stopped.", ephemeral=True)
 
     bot.volume_task = asyncio.create_task(bot._watch_volume())
     try:
