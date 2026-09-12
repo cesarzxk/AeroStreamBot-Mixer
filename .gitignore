@@ -4,3 +4,7 @@ __pycache__/
 .discord_bot.log*
 .discord_token.txt*
 .discord_bot_volume.txt*
+build-appimage/
+AeroStream-Mixer-*.AppImage
+build-deb/
+aerostream-mixer_*.deb
