@@ -10,7 +10,6 @@ import re
 import os
 import signal
 import ctypes
-import json
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QPushButton, QSlider,
     QLabel, QVBoxLayout, QHBoxLayout, QFrame, QListWidget, QListWidgetItem,
@@ -34,133 +33,11 @@ BLOCKED_APPS: list[str] = [
     "zoom",
 ]
 
-BOT_TOKEN_FILE = os.path.join(os.path.dirname(
-    os.path.abspath(__file__)), ".discord_token.txt")
-BOT_LOG_FILE = os.path.join(os.path.dirname(
-    os.path.abspath(__file__)), ".discord_bot.log")
-BOT_VOLUME_FILE = os.path.join(os.path.dirname(
-    os.path.abspath(__file__)), ".discord_bot_volume.txt")
-LANGUAGE_FILE = os.path.join(os.path.dirname(
-    os.path.abspath(__file__)), ".aerostream_language.txt")
-TRANSLATIONS_FILE = os.path.join(os.path.dirname(
-    os.path.abspath(__file__)), "translations.json")
+CONFIG_DIR = os.path.expanduser("~/.config/aerostream-mixer")
+BOT_TOKEN_FILE = os.path.join(CONFIG_DIR, "discord_token.txt")
+BOT_LOG_FILE = os.path.join(CONFIG_DIR, "discord_bot.log")
+BOT_VOLUME_FILE = os.path.join(CONFIG_DIR, "discord_bot_volume.txt")
 PHYSICAL_SINK_FILE = os.path.expanduser("~/.aerostream-physical-sink")
-
-LANGUAGE_OPTIONS = {
-    "en": "EN",
-    "pt": "PT",
-}
-
-DEFAULT_TRANSLATIONS = {
-    "en": {
-        "title": "Stream Audio Mixer",
-        "language": "Language",
-        "status_checking": "Checking...",
-        "source_mode": "Source mode",
-        "desktop_only": "Desktop only",
-        "mic_plus_desktop": "Mic + Desktop",
-        "desktop_audio": "Desktop Audio",
-        "filtered_apps": "Filtered Apps (blocked from passthrough)",
-        "none_running": "None running",
-        "app_name_to_block": "App name to block…",
-        "discord_bot": "Discord bot",
-        "bot_token_placeholder": "Bot token (saved to .discord_token.txt)",
-        "load_token": "Load token",
-        "save_token": "Save token",
-        "start_bot": "Start bot",
-        "bot_volume": "Bot transmission volume",
-        "bot_stopped": "Bot stopped",
-        "start": "Start",
-        "teardown": "Teardown",
-        "drag_hint": "Drag to move  ·  Double-click to minimize to tray",
-        "open_restore": "Open / Restore",
-        "minimize_tray": "Minimize to Tray",
-        "exit": "Exit",
-        "running": "Running",
-        "stopped": "Stopped",
-        "setting_up": "Setting up...",
-        "setting_up_mixer": "Setting up mixer...",
-        "token_loaded": "Token loaded",
-        "no_token_saved": "No token saved in .discord_token.txt",
-        "enter_token": "Enter a token before saving",
-        "token_saved": "Token saved to .discord_token.txt",
-        "token_empty": "Token is empty. Save a token first.",
-        "bot_already_running": "Bot is already running",
-        "bot_starting": "Bot starting (PID {pid})...",
-        "error_starting_bot": "Error starting bot: {exc}",
-        "bot_stopped_exit": "Bot stopped (exit code {code})",
-        "sink": "Sink",
-        "source": "Source",
-        "blocked_now": "🔇 Blocked now: {apps}",
-        "no_blocked_apps": "✓ No blocked apps running",
-        "device_status": "{sink}\n{source}",
-        "check_status": "Checking...",
-        "audio_setup": "Setting up...",
-        "audio_running": "Running",
-        "audio_stopped": "Stopped",
-    },
-    "pt": {
-        "title": "Stream Audio Mixer",
-        "language": "Idioma",
-        "status_checking": "Verificando...",
-        "source_mode": "Modo de origem",
-        "desktop_only": "Apenas desktop",
-        "mic_plus_desktop": "Microfone + Desktop",
-        "desktop_audio": "Áudio do desktop",
-        "filtered_apps": "Aplicativos filtrados (bloqueados no passthrough)",
-        "none_running": "Nenhum em execução",
-        "app_name_to_block": "Nome do app para bloquear…",
-        "discord_bot": "Bot do Discord",
-        "bot_token_placeholder": "Token do bot (salvo em .discord_token.txt)",
-        "load_token": "Carregar token",
-        "save_token": "Salvar token",
-        "start_bot": "Iniciar bot",
-        "bot_volume": "Volume de transmissão do bot",
-        "bot_stopped": "Bot parado",
-        "start": "Iniciar",
-        "teardown": "Encerrar",
-        "drag_hint": "Arraste para mover  ·  Clique duplo para minimizar na bandeja",
-        "open_restore": "Abrir / Restaurar",
-        "minimize_tray": "Minimizar para a bandeja",
-        "exit": "Sair",
-        "running": "Em execução",
-        "stopped": "Parado",
-        "setting_up": "Configurando...",
-        "setting_up_mixer": "Configurando mixer...",
-        "token_loaded": "Token carregado",
-        "no_token_saved": "Nenhum token salvo em .discord_token.txt",
-        "enter_token": "Informe um token antes de salvar",
-        "token_saved": "Token salvo em .discord_token.txt",
-        "token_empty": "Token vazio. Salve um token primeiro.",
-        "bot_already_running": "Bot já está em execução",
-        "bot_starting": "Bot iniciando (PID {pid})...",
-        "error_starting_bot": "Erro ao iniciar bot: {exc}",
-        "bot_stopped_exit": "Bot encerrado (código de saída {code})",
-        "sink": "Sink",
-        "source": "Fonte",
-        "blocked_now": "🔇 Bloqueado agora: {apps}",
-        "no_blocked_apps": "✓ Nenhum app bloqueado em execução",
-        "device_status": "{sink}\n{source}",
-        "check_status": "Verificando...",
-        "audio_setup": "Configurando...",
-        "audio_running": "Em execução",
-        "audio_stopped": "Parado",
-    },
-}
-
-
-def load_translations(path: str = TRANSLATIONS_FILE) -> dict:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            return {**DEFAULT_TRANSLATIONS, **data}
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
-    return DEFAULT_TRANSLATIONS
-
-
-TRANSLATIONS = load_translations()
 
 
 def get_bot_command(project_dir: str, bot_python: str) -> list[str]:
@@ -245,31 +122,16 @@ def load_discord_token(path: str = BOT_TOKEN_FILE) -> str:
 
 
 def save_discord_token(token: str, path: str = BOT_TOKEN_FILE) -> None:
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write((token or "").strip())
     os.chmod(path, 0o600)
 
 
 def save_bot_volume(value: int) -> None:
+    os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
     with open(BOT_VOLUME_FILE, "w", encoding="ascii") as f:
         f.write(str(max(0, min(200, int(value))) / 100))
-
-
-def load_language(path: str = LANGUAGE_FILE) -> str:
-    try:
-        value = open(path, "r", encoding="utf-8").read().strip().lower()
-    except FileNotFoundError:
-        return "en"
-    return value if value in LANGUAGE_OPTIONS else "en"
-
-
-def save_language(language: str, path: str = LANGUAGE_FILE) -> None:
-    code = (language or "en").strip().lower()
-    if code not in LANGUAGE_OPTIONS:
-        code = "en"
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(code)
-    os.chmod(path, 0o600)
 
 
 # ---------------------------------------------------------------------------
@@ -400,6 +262,36 @@ def ensure_block_sink():
         return None
 
     return _get_sink_id_by_name("stream-block")
+
+
+def _ensure_block_loopback():
+    default_sink = get_default_sink()
+    if not default_sink:
+        return
+
+    rc, out, _ = run_pactl("list", "short", "modules")
+    for line in out.splitlines():
+        if ("module-loopback" in line
+                and "source=stream-block.monitor" in line):
+            return
+
+    run_pactl(
+        "load-module", "module-loopback",
+        "source=stream-block.monitor",
+        f"sink={default_sink}",
+        "source_dont_move=true",
+    )
+
+
+def _remove_block_loopbacks():
+    rc, out, _ = run_pactl("list", "short", "modules")
+    for line in out.splitlines():
+        parts = line.strip().split()
+        if len(parts) < 3:
+            continue
+        mod_args = " ".join(parts[2:])
+        if parts[1] == "module-loopback" and "source=stream-block.monitor" in mod_args:
+            run_pactl("unload-module", parts[0])
 
 
 def teardown_block_sink():
@@ -1008,7 +900,6 @@ def create_aero_tray_icon() -> QIcon:
 class MixerWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.language_code = load_language()
         self.setWindowTitle("Stream Audio Mixer")
         self.resize(470, 500)
         self.setMinimumSize(420, 560)
@@ -1090,80 +981,6 @@ class MixerWindow(QMainWindow):
         self.activateWindow()
         self.raise_()
 
-    def _translate(self, key: str, **kwargs) -> str:
-        strings = TRANSLATIONS.get(self.language_code, TRANSLATIONS["en"])
-        value = strings.get(key, key)
-        return value.format(**kwargs) if kwargs else value
-
-    def _on_language_changed(self):
-        code = self.language_combo.currentData() or "en"
-        self.language_code = code
-        save_language(code)
-        self._apply_language()
-
-    def _apply_language(self):
-        self.setWindowTitle(self._translate("title"))
-        self.status_label.setText(self._translate("status_checking"))
-        self.device_label.setText(self._translate(
-            "device_status", sink="?", source="?"))
-
-        self.language_combo.blockSignals(True)
-        self.language_combo.setCurrentIndex(
-            list(LANGUAGE_OPTIONS.keys()).index(self.language_code)
-        )
-        self.language_combo.blockSignals(False)
-
-        if hasattr(self, "stream_mode_combo"):
-            selected = self.stream_mode_combo.currentData() or "desktop"
-            self.stream_mode_combo.clear()
-            self.stream_mode_combo.addItem(
-                self._translate("desktop_only"), "desktop")
-            self.stream_mode_combo.addItem(
-                self._translate("mic_plus_desktop"), "mic")
-            if selected in ("desktop", "mic"):
-                self.stream_mode_combo.setCurrentIndex(
-                    0 if selected == "desktop" else 1
-                )
-            else:
-                self.stream_mode_combo.setCurrentIndex(0)
-
-        if hasattr(self, "mode_label"):
-            self.mode_label.setText(self._translate("source_mode"))
-        if hasattr(self, "cl1"):
-            self.cl1.setText(self._translate("desktop_audio"))
-        if hasattr(self, "bl_label"):
-            self.bl_label.setText(self._translate("filtered_apps"))
-        if hasattr(self, "self.blocked_active_label"):
-            self.blocked_active_label.setText(self._translate("none_running"))
-        if hasattr(self, "self.bl_input"):
-            self.bl_input.setPlaceholderText(
-                self._translate("app_name_to_block"))
-        if hasattr(self, "bot_label"):
-            self.bot_label.setText(self._translate("discord_bot"))
-        if hasattr(self, "self.bot_token_input"):
-            self.bot_token_input.setPlaceholderText(
-                self._translate("bot_token_placeholder"))
-        if hasattr(self, "self.load_token_btn"):
-            self.load_token_btn.setText(self._translate("load_token"))
-        if hasattr(self, "self.save_token_btn"):
-            self.save_token_btn.setText(self._translate("save_token"))
-        if hasattr(self, "self.start_bot_btn"):
-            self.start_bot_btn.setText(self._translate("start_bot"))
-        if hasattr(self, "transmission_label"):
-            transmission_label = getattr(self, "transmission_label", None)
-            if transmission_label is not None:
-                transmission_label.setText(self._translate("bot_volume"))
-        if hasattr(self, "self.bot_status_label"):
-            self.bot_status_label.setText(self._translate("bot_stopped"))
-        if hasattr(self, "self.start_btn"):
-            self.start_btn.setText(self._translate("start"))
-        if hasattr(self, "self.teardown_btn"):
-            self.teardown_btn.setText(self._translate("teardown"))
-        if hasattr(self, "hint"):
-            self.hint.setText(self._translate("drag_hint"))
-        if hasattr(self, "language_label"):
-            self.language_label.setText(self._translate("language"))
-
     # -- window dragging (frameless) --
 
     def mousePressEvent(self, event):
@@ -1189,41 +1006,12 @@ class MixerWindow(QMainWindow):
         layout.setSpacing(10)
         layout.setContentsMargins(18, 16, 18, 16)
 
-        title_row = QHBoxLayout()
-        title = QLabel(self._translate("title"))
+        title = QLabel("Stream Audio Mixer")
         title.setObjectName("titleLabel")
         title.setAlignment(Qt.AlignCenter)
-        title_row.addWidget(title)
-        title_row.addStretch()
+        layout.addWidget(title)
 
-        self.language_combo = QComboBox()
-        self.language_combo.setFixedWidth(72)
-        self.language_combo.setStyleSheet("""
-            QComboBox {
-                background: rgba(245, 250, 255, 220);
-                border: 1px solid rgba(100, 160, 215, 150);
-                border-radius: 5px;
-                padding: 2px 6px;
-                color: rgba(15, 55, 120, 230);
-                font-size: 11px;
-                font-weight: bold;
-            }
-            QComboBox::drop-down {
-                width: 0px;
-                border: none;
-            }
-        """)
-        for code, label in LANGUAGE_OPTIONS.items():
-            self.language_combo.addItem(label, code)
-        self.language_combo.setCurrentIndex(
-            list(LANGUAGE_OPTIONS.keys()).index(self.language_code)
-        )
-        self.language_combo.currentIndexChanged.connect(
-            self._on_language_changed)
-        title_row.addWidget(self.language_combo)
-        layout.addLayout(title_row)
-
-        self.status_label = QLabel(self._translate("status_checking"))
+        self.status_label = QLabel("Checking...")
         self.status_label.setObjectName("statusLabel")
         self.status_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.status_label)
@@ -1239,15 +1027,13 @@ class MixerWindow(QMainWindow):
         mode_layout = QVBoxLayout(mode_frame)
         mode_layout.setContentsMargins(12, 10, 12, 10)
         mode_row = QHBoxLayout()
-        self.mode_label = QLabel(self._translate("source_mode"))
-        self.mode_label.setObjectName("channelLabel")
-        mode_row.addWidget(self.mode_label)
+        mode_label = QLabel("Source mode")
+        mode_label.setObjectName("channelLabel")
+        mode_row.addWidget(mode_label)
         self.stream_mode_combo = QComboBox()
-        self.stream_mode_combo.addItem(
-            self._translate("desktop_only"), "desktop")
-        self.stream_mode_combo.addItem(
-            self._translate("mic_plus_desktop"), "mic")
-        self.stream_mode_combo.setCurrentIndex(0)
+        for key, label in STREAM_MODES.items():
+            self.stream_mode_combo.addItem(label, key)
+        self.stream_mode_combo.setCurrentText(STREAM_MODES["desktop"])
         mode_row.addWidget(self.stream_mode_combo)
         mode_layout.addLayout(mode_row)
         layout.addWidget(mode_frame)
@@ -1262,9 +1048,9 @@ class MixerWindow(QMainWindow):
         audio_layout = QVBoxLayout(audio_frame)
         audio_layout.setContentsMargins(12, 10, 12, 10)
 
-        self.cl1 = QLabel(self._translate("desktop_audio"))
-        self.cl1.setObjectName("channelLabel")
-        audio_layout.addWidget(self.cl1)
+        cl1 = QLabel("Desktop Audio")
+        cl1.setObjectName("channelLabel")
+        audio_layout.addWidget(cl1)
 
         self.desktop_slider = QSlider(Qt.Horizontal)
         self.desktop_slider.setRange(0, 200)
@@ -1325,13 +1111,13 @@ class MixerWindow(QMainWindow):
         app_layout = QVBoxLayout(app_frame)
         app_layout.setContentsMargins(12, 10, 12, 10)
 
-        self.bl_label = QLabel(self._translate("filtered_apps"))
-        self.bl_label.setMaximumHeight(20)
-        self.bl_label.setObjectName("channelLabel")
-        app_layout.addWidget(self.bl_label)
+        bl_label = QLabel("Filtered Apps (blocked from passthrough)")
+        bl_label.setMaximumHeight(20)
+        bl_label.setObjectName("channelLabel")
+        app_layout.addWidget(bl_label)
 
         # List of currently-blocked-active apps (live status)
-        self.blocked_active_label = QLabel(self._translate("none_running"))
+        self.blocked_active_label = QLabel("None running")
         self.blocked_active_label.setObjectName("deviceLabel")
         self.blocked_active_label.setWordWrap(True)
         app_layout.addWidget(self.blocked_active_label)
@@ -1363,7 +1149,7 @@ class MixerWindow(QMainWindow):
 
         add_row = QHBoxLayout()
         self.bl_input = QLineEdit()
-        self.bl_input.setPlaceholderText(self._translate("app_name_to_block"))
+        self.bl_input.setPlaceholderText("App name to block…")
         self.bl_input.setStyleSheet("""
             QLineEdit {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -1447,13 +1233,13 @@ class MixerWindow(QMainWindow):
         bot_layout = QVBoxLayout(bot_frame)
         bot_layout.setContentsMargins(12, 10, 12, 10)
 
-        self.bot_label = QLabel(self._translate("discord_bot"))
-        self.bot_label.setObjectName("channelLabel")
-        bot_layout.addWidget(self.bot_label)
+        bot_label = QLabel("Discord bot")
+        bot_label.setObjectName("channelLabel")
+        bot_layout.addWidget(bot_label)
 
         self.bot_token_input = QLineEdit()
         self.bot_token_input.setPlaceholderText(
-            self._translate("bot_token_placeholder"))
+            "Token do bot (salvo em .discord_token.txt)")
         self.bot_token_input.setEchoMode(QLineEdit.Password)
         self.bot_token_input.setStyleSheet("""
             QLineEdit {
@@ -1473,11 +1259,11 @@ class MixerWindow(QMainWindow):
         bot_token_row = QHBoxLayout()
         bot_token_row.setSpacing(8)
         bot_token_row.setContentsMargins(0, 0, 0, 0)
-        self.load_token_btn = QPushButton(self._translate("load_token"))
+        self.load_token_btn = QPushButton("Carregar token")
         self.load_token_btn.clicked.connect(self._on_load_token)
-        self.save_token_btn = QPushButton(self._translate("save_token"))
+        self.save_token_btn = QPushButton("Salvar token")
         self.save_token_btn.clicked.connect(self._on_save_token)
-        self.start_bot_btn = QPushButton(self._translate("start_bot"))
+        self.start_bot_btn = QPushButton("Start bot")
         self.start_bot_btn.clicked.connect(self._on_start_discord_bot)
         for button in (
             self.load_token_btn,
@@ -1490,9 +1276,9 @@ class MixerWindow(QMainWindow):
             bot_token_row.addWidget(button, 1)
         bot_layout.addLayout(bot_token_row)
 
-        self.transmission_label = QLabel(self._translate("bot_volume"))
-        self.transmission_label.setObjectName("channelLabel")
-        bot_layout.addWidget(self.transmission_label)
+        transmission_label = QLabel("Bot transmission volume")
+        transmission_label.setObjectName("channelLabel")
+        bot_layout.addWidget(transmission_label)
         self.bot_volume_slider = QSlider(Qt.Horizontal)
         self.bot_volume_slider.setRange(0, 200)
         self.bot_volume_slider.setValue(100)
@@ -1504,30 +1290,28 @@ class MixerWindow(QMainWindow):
         self.bot_volume_label.setObjectName("volPct")
         bot_layout.addWidget(self.bot_volume_label)
 
-        self.bot_status_label = QLabel(self._translate("bot_stopped"))
+        self.bot_status_label = QLabel("Bot parado")
         self.bot_status_label.setObjectName("deviceLabel")
         bot_layout.addWidget(self.bot_status_label)
         layout.addWidget(bot_frame)
 
         # Separator before buttons
         btn_row = QHBoxLayout()
-        self.start_btn = QPushButton(self._translate("start"))
+        self.start_btn = QPushButton("Start")
         self.start_btn.clicked.connect(self._on_start)
         btn_row.addWidget(self.start_btn)
 
-        self.teardown_btn = QPushButton(self._translate("teardown"))
+        self.teardown_btn = QPushButton("Teardown")
         self.teardown_btn.setObjectName("teardownBtn")
         self.teardown_btn.clicked.connect(self._on_teardown)
         btn_row.addWidget(self.teardown_btn)
         layout.addLayout(btn_row)
 
         # Close hint
-        self.hint = QLabel(self._translate("drag_hint"))
-        self.hint.setObjectName("deviceLabel")
-        self.hint.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.hint)
-
-        self._apply_language()
+        hint = QLabel("Drag to move  ·  Double-click to minimize to tray")
+        hint.setObjectName("deviceLabel")
+        hint.setAlignment(Qt.AlignCenter)
+        layout.addWidget(hint)
 
     # -- actions --
 
@@ -1561,11 +1345,11 @@ class MixerWindow(QMainWindow):
 
     def _on_start(self):
         self.start_btn.setEnabled(False)
-        self.status_label.setText(self._translate("setting_up"))
+        self.status_label.setText("Setting up...")
         source_mode = self.stream_mode_combo.currentData()
         success, msg = setup_mixer(source_mode=source_mode)
         self.status_label.setText(
-            f"{'OK' if success else 'FAIL'}  {msg}" if not success else self._translate("running"))
+            f"{'OK' if success else 'FAIL'}  {msg}" if not success else "Running")
         self.start_btn.setEnabled(True)
         self.poll_state()
 
@@ -1573,28 +1357,28 @@ class MixerWindow(QMainWindow):
         token = load_discord_token()
         if token:
             self.bot_token_input.setText(token)
-            self.bot_status_label.setText(self._translate("token_loaded"))
+            self.bot_status_label.setText("Token carregado")
         else:
             self.bot_status_label.setText(
-                self._translate("no_token_saved"))
+                "Nenhum token salvo em .discord_token.txt")
 
     def _on_save_token(self):
         token = self.bot_token_input.text().strip()
         if not token:
-            self.bot_status_label.setText(self._translate("enter_token"))
+            self.bot_status_label.setText("Informe um token antes de salvar")
             return
         save_discord_token(token)
-        self.bot_status_label.setText(self._translate("token_saved"))
+        self.bot_status_label.setText("Token salvo em .discord_token.txt")
 
     def _on_start_discord_bot(self):
         token = self.bot_token_input.text().strip() or load_discord_token()
         if not token:
             self.bot_status_label.setText(
-                self._translate("token_empty"))
+                "Token vazio. Salve um token primeiro.")
             return
 
         self.start_btn.setEnabled(False)
-        self.status_label.setText(self._translate("setting_up_mixer"))
+        self.status_label.setText("Setting up mixer...")
         source_mode = self.stream_mode_combo.currentData()
         if has_null_sink():
             success, msg = True, "Mixer already running"
@@ -1605,14 +1389,13 @@ class MixerWindow(QMainWindow):
             self.start_btn.setEnabled(True)
             return
 
-        self.status_label.setText(self._translate("running"))
+        self.status_label.setText("Running")
         self.start_btn.setEnabled(True)
         self.poll_state()
 
         try:
             if self.bot_process and self.bot_process.poll() is None:
-                self.bot_status_label.setText(
-                    self._translate("bot_already_running"))
+                self.bot_status_label.setText("Bot já está em execução")
                 return
 
             project_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1622,6 +1405,7 @@ class MixerWindow(QMainWindow):
             bot_env = os.environ.copy()
             bot_env["DISCORD_BOT_TOKEN"] = token
             save_bot_volume(self.bot_volume_slider.value())
+            os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
             self.bot_log_handle = open(BOT_LOG_FILE, "a", encoding="utf-8")
             self.bot_process = subprocess.Popen(
                 get_bot_command(project_dir, bot_python),
@@ -1632,14 +1416,13 @@ class MixerWindow(QMainWindow):
                 preexec_fn=_terminate_bot_with_parent,
             )
             self.bot_status_label.setText(
-                self._translate("bot_starting", pid=self.bot_process.pid))
+                f"Bot iniciando (PID {self.bot_process.pid})...")
         except Exception as exc:
             if self.bot_log_handle:
                 self.bot_log_handle.close()
                 self.bot_log_handle = None
             self.bot_process = None
-            self.bot_status_label.setText(
-                self._translate("error_starting_bot", exc=exc))
+            self.bot_status_label.setText(f"Erro ao iniciar bot: {exc}")
 
     def _close_bot_log(self):
         if self.bot_log_handle:
@@ -1661,7 +1444,7 @@ class MixerWindow(QMainWindow):
         finally:
             self._close_bot_log()
             self.bot_process = None
-            self.bot_status_label.setText(self._translate("bot_stopped"))
+            self.bot_status_label.setText("Bot encerrado")
 
     def _on_teardown(self):
         self.teardown_btn.setEnabled(False)
@@ -1696,7 +1479,7 @@ class MixerWindow(QMainWindow):
             self._close_bot_log()
             self.bot_process = None
             self.bot_status_label.setText(
-                self._translate("bot_stopped_exit", code=exit_code))
+                f"Bot encerrado (código {exit_code})")
 
         state = get_mixer_state()
 
@@ -1705,13 +1488,13 @@ class MixerWindow(QMainWindow):
             enforce_blocklist()
 
         if state["active"]:
-            self.status_label.setText(self._translate("running"))
+            self.status_label.setText("Running")
             self.start_btn.setEnabled(False)
             self.teardown_btn.setEnabled(True)
             self.desktop_slider.setEnabled(True)
             self.desktop_mute_btn.setEnabled(True)
         else:
-            self.status_label.setText(self._translate("stopped"))
+            self.status_label.setText("Stopped")
             self.start_btn.setEnabled(True)
             self.teardown_btn.setEnabled(False)
             self.desktop_slider.setEnabled(False)
@@ -1721,17 +1504,16 @@ class MixerWindow(QMainWindow):
         sn = state["default_sink"] or "?"
         sc = state["default_source"] or "?"
         self.device_label.setText(
-            self._translate("device_status", sink=sn[:50], source=sc[:50])
+            f"Sink: {sn[:50]}\nSource: {sc[:50]}"
         )
 
         # Blocked apps — live status
         blocked = state["blocked_active"]
         if blocked:
             self.blocked_active_label.setText(
-                self._translate("blocked_now", apps=", ".join(blocked)))
+                "🔇 Blocked now: " + ", ".join(blocked))
         elif state["active"]:
-            self.blocked_active_label.setText(
-                self._translate("no_blocked_apps"))
+            self.blocked_active_label.setText("✓ No blocked apps running")
         else:
             self.blocked_active_label.setText("")
 
