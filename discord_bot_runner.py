@@ -6,14 +6,18 @@ import os
 import subprocess
 
 AUDIO_SOURCE = "stream-mix.monitor"
-BOT_VOLUME_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), ".discord_bot_volume.txt")
+CONFIG_DIR = os.path.expanduser("~/.config/aerostream-mixer")
+BOT_VOLUME_FILE = os.path.join(CONFIG_DIR, "discord_bot_volume.txt")
 
 try:
+    import nacl
+    import nacl.secret
+    import nacl.utils
     import discord
     from discord.ext import commands
-except ImportError:
-    raise SystemExit("Install the discord.py package: pip install discord.py")
+except ImportError as exc:
+    raise SystemExit(
+        f"Voice support import failed: {exc}. Install discord.py, PyNaCl, and davey.")
 
 
 class AudioBot(commands.Bot):
@@ -158,6 +162,12 @@ async def main():
         channel = voice_state.channel
         voice_client = interaction.guild.voice_client
         try:
+            if not discord.voice_client.has_nacl:
+                await interaction.response.send_message(
+                    "PyNaCl voice support is unavailable in this package.",
+                    ephemeral=True,
+                )
+                return
             if voice_client is None:
                 voice_client = await channel.connect()
             elif voice_client.channel != channel:
